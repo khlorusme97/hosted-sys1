@@ -8,81 +8,133 @@ on:
 permissions:
   contents: write
   pages: write
-  id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Download existing raw.log artifact
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ─────────────────────────────────────────────
+      # Restore previous raw.log
+      # ─────────────────────────────────────────────
+      - name: Download previous raw log (optional)
         uses: actions/download-artifact@v4
         with:
           name: raw-log
           path: logs
         continue-on-error: true
 
-      - name: Install Tor + tools
+      # ─────────────────────────────────────────────
+      # Install Tor + toolsss
+      # ─────────────────────────────────────────────
+      - name: Install Tor and tools
         run: |
           sudo apt-get update
           sudo apt-get install -y tor curl jq
 
-      - name: Start Tor and wait for bootstrap
+      # ─────────────────────────────────────────────
+      # tor (hopefully compatible with new updates)
+      # ─────────────────────────────────────────────
+      - name: Start Tor
         run: |
+          set -e
+
           mkdir -p tor-data
           PORT=$((9050 + RANDOM % 1000))
           echo "$PORT" > tor-port.txt
-          tor --SocksPort $PORT --DataDirectory ./tor-data --Log "notice file tor.log" &
-          # Wait up to 60s for "Bootstrapped 100%"
-          for i in {1..60}; do
-            if grep -q "Bootstrapped 100%" tor.log 2>/dev/null; then
+
+          tor \
+            --SocksPort $PORT \
+            --DataDirectory ./tor-data \
+            --Log "notice file tor.log" \
+            --RunAsDaemon 1
+
+          echo "Waiting for Tor bootstrap…"
+          for i in {1..120}; do
+            if grep -q "Bootstrapped 100%" tor.log; then
               echo "Tor bootstrapped"
-              break
+              exit 0
             fi
             sleep 1
           done
-          echo "Last 20 lines of tor.log:"
-          tail -n 20 tor.log || true
 
-      - name: Probe homeserver via Tor
+          echo "::error::Tor failed to bootstrap"
+          tail -n 50 tor.log || true
+          exit 1
+
+      # ─────────────────────────────────────────────
+      # Probe Matrix homeserver via Tor
+      # ─────────────────────────────────────────────
+      - name: Probe Matrix over Tor
         env:
           MATRIX_ONION: ${{ secrets.MATRIX_ONION }}
         run: |
           set -e
-          mkdir -p public logs
-          URL="${MATRIX_ONION%/}/_matrix/client/versions"
-          echo "Probing $URL"
 
-          STATUS="DOWN"
-          CODE=0
-          LATENCY_MS=0
+          mkdir -p public logs
+
+          if [ -z "$MATRIX_ONION" ]; then
+            echo "::error::MATRIX_ONION secret not set"
+            exit 1
+          fi
+
+          URL="${MATRIX_ONION%/}/_matrix/client/versions"
           PORT=$(cat tor-port.txt)
 
+          STATUS="DOWN"
+          LATENCY_MS=0
+
           START=$(date +%s%3N || true)
-          RESP=$(curl -sS --socks5-hostname 127.0.0.1:$PORT --max-time 20 -w ' HTTPSTATUS:%{http_code}' "$URL" || true)
+
+          HTTP_CODE=$(curl \
+            --socks5-hostname 127.0.0.1:$PORT \
+            --connect-timeout 10 \
+            --max-time 20 \
+            --retry 1 \
+            -o /tmp/matrix.json \
+            -w '%{http_code}' \
+            "$URL" || echo 000)
+
           END=$(date +%s%3N || true)
+          [ -n "$START" ] && [ -n "$END" ] && LATENCY_MS=$((END-START))
 
-          if [ -n "$START" ] && [ -n "$END" ]; then LATENCY_MS=$((END-START)); fi
-          CODE="${RESP##*HTTPSTATUS:}"
-          # clean up code (strip leading zeros, default 0)
-          CODE_CLEAN=$(echo "${CODE:-0}" | sed 's/^0*//')
-          [ -z "$CODE_CLEAN" ] && CODE_CLEAN=0
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 500 ]; then
+            if jq -e '.versions | type=="array"' /tmp/matrix.json >/dev/null 2>&1; then
+              STATUS="UP"
+            fi
+          fi
 
-          if [ "$CODE_CLEAN" -ge 200 ] && [ "$CODE_CLEAN" -lt 500 ]; then STATUS="UP"; fi
           TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # latest result
-          jq -n --arg status "$STATUS" --argjson code "$CODE_CLEAN" --arg timestamp "$TS" --argjson latency_ms "$LATENCY_MS" \
-            '{status:$status, http_code:$code, checked_at:$timestamp, latency_ms:$latency_ms}' > public/status.json
+          jq -n \
+            --arg status "$STATUS" \
+            --argjson code "$HTTP_CODE" \
+            --arg timestamp "$TS" \
+            --argjson latency_ms "$LATENCY_MS" \
+            '{status:$status, http_code:$code, checked_at:$timestamp, latency_ms:$latency_ms}' \
+            > public/status.json
 
-          # raw log
-          echo "{\"status\":\"$STATUS\",\"http_code\":$CODE_CLEAN,\"checked_at\":\"$TS\",\"latency_ms\":$LATENCY_MS}" >> logs/raw.log
+          echo "{\"status\":\"$STATUS\",\"http_code\":$HTTP_CODE,\"checked_at\":\"$TS\",\"latency_ms\":$LATENCY_MS}" >> logs/raw.log
 
+      # ─────────────────────────────────────────────-
+      # persist raw.log
+      # ─────────────────────────────────────────────---
+      - name: Upload raw log artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-log
+          path: logs/raw.log
+
+      # ─────────────────────────────────────────────
+      # status.json
+      # ─────────────────────────────────────────────
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
