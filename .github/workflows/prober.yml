@@ -18,6 +18,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ─────────────────────────────────────────────
+      # Checkout
+      # ─────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -32,7 +35,7 @@ jobs:
         continue-on-error: true
 
       # ─────────────────────────────────────────────
-      # Install Tor + toolsss
+      # Install Tor + tools
       # ─────────────────────────────────────────────
       - name: Install Tor and tools
         run: |
@@ -40,19 +43,21 @@ jobs:
           sudo apt-get install -y tor curl jq
 
       # ─────────────────────────────────────────────
-      # tor (hopefully compatible with new updates)
+      # Start Tor (2025 proof...)
       # ─────────────────────────────────────────────
       - name: Start Tor
         run: |
           set -e
 
-          mkdir -p tor-data
+          TOR_DATA="$PWD/tor-data"
+          mkdir -p "$TOR_DATA"
+
           PORT=$((9050 + RANDOM % 1000))
           echo "$PORT" > tor-port.txt
 
           tor \
-            --SocksPort $PORT \
-            --DataDirectory ./tor-data \
+            --SocksPort "$PORT" \
+            --DataDirectory "$TOR_DATA" \
             --Log "notice file tor.log" \
             --RunAsDaemon 1
 
@@ -123,9 +128,9 @@ jobs:
 
           echo "{\"status\":\"$STATUS\",\"http_code\":$HTTP_CODE,\"checked_at\":\"$TS\",\"latency_ms\":$LATENCY_MS}" >> logs/raw.log
 
-      # ─────────────────────────────────────────────-
-      # persist raw.log
-      # ─────────────────────────────────────────────---
+      # ─────────────────────────────────────────────
+      # Persist raw.log
+      # ─────────────────────────────────────────────
       - name: Upload raw log artifact
         uses: actions/upload-artifact@v4
         with:
@@ -133,7 +138,7 @@ jobs:
           path: logs/raw.log
 
       # ─────────────────────────────────────────────
-      # status.json
+      # Publish status.json
       # ─────────────────────────────────────────────
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
