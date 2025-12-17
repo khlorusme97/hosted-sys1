@@ -33,7 +33,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y tor curl jq
 
-      # ─────────────────────────────────────────────--
+      # ─────────────────────────────────────────────
       # Start Tor (2025 proof)
       # ─────────────────────────────────────────────
       - name: Start Tor
@@ -85,7 +85,6 @@ jobs:
 
           STATUS="DOWN"
           LATENCY_MS=0
-          COMMENT=""
 
           START=$(date +%s%3N || true)
 
@@ -105,7 +104,6 @@ jobs:
             if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 500 ]; then
               if jq -e '.versions | type=="array"' /tmp/matrix.json >/dev/null 2>&1; then
                 STATUS="UP"
-                COMMENT=""
                 break
               fi
             fi
@@ -114,10 +112,6 @@ jobs:
             sleep 5
           done
 
-          if [ "$STATUS" = "DOWN" ]; then
-            COMMENT="Server is down, has a slow internet connection, or the GitHub prober malfunctioned"
-          fi
-
           TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           jq -n \
@@ -125,11 +119,10 @@ jobs:
             --argjson code "$HTTP_CODE" \
             --arg timestamp "$TS" \
             --argjson latency_ms "$LATENCY_MS" \
-            --arg comment "$COMMENT" \
-            '{status:$status, http_code:$code, checked_at:$timestamp, latency_ms:$latency_ms, comment:$comment}' \
+            '{status:$status, http_code:$code, checked_at:$timestamp, latency_ms:$latency_ms}' \
             > public/status.json
 
-          echo "{\"status\":\"$STATUS\",\"http_code\":$HTTP_CODE,\"checked_at\":\"$TS\",\"latency_ms\":$LATENCY_MS,\"comment\":\"$COMMENT\"}" >> logs/raw.log
+          echo "{\"status\":\"$STATUS\",\"http_code\":$HTTP_CODE,\"checked_at\":\"$TS\",\"latency_ms\":$LATENCY_MS}" >> logs/raw.log
 
       # ─────────────────────────────────────────────
       # (Optional)
