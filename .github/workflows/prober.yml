@@ -66,7 +66,7 @@ jobs:
           exit 1
 
       # ─────────────────────────────────────────────
-      # Probe Matrix homeserver via Tor
+      # Probe Matrix homeserver via Tor (with retries)
       # ─────────────────────────────────────────────
       - name: Probe Matrix over Tor
         env:
@@ -83,25 +83,39 @@ jobs:
           URL="${MATRIX_ONION%/}/_matrix/client/versions"
           PORT=$(cat tor-port.txt)
 
+          STATUS="DOWN"
+          LATENCY_MS=0
+          COMMENT=""
+
           START=$(date +%s%3N || true)
 
-          HTTP_CODE=$(curl \
-            --socks5-hostname 127.0.0.1:$PORT \
-            --connect-timeout 10 \
-            --max-time 20 \
-            --retry 1 \
-            -o /tmp/matrix.json \
-            -w '%{http_code}' \
-            "$URL" || echo 000)
+          TRIES=0
+          until [ $TRIES -ge 2 ]; do
+            HTTP_CODE=$(curl \
+              --socks5-hostname 127.0.0.1:$PORT \
+              --connect-timeout 30 \
+              --max-time 60 \
+              -o /tmp/matrix.json \
+              -w '%{http_code}' \
+              "$URL" || echo 000)
 
-          END=$(date +%s%3N || true)
-          LATENCY_MS=$((END-START))
+            END=$(date +%s%3N || true)
+            [ -n "$START" ] && [ -n "$END" ] && LATENCY_MS=$((END-START))
 
-          STATUS="DOWN"
-          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 500 ]; then
-            if jq -e '.versions | type=="array"' /tmp/matrix.json >/dev/null 2>&1; then
-              STATUS="UP"
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 500 ]; then
+              if jq -e '.versions | type=="array"' /tmp/matrix.json >/dev/null 2>&1; then
+                STATUS="UP"
+                COMMENT=""
+                break
+              fi
             fi
+
+            TRIES=$((TRIES+1))
+            sleep 5
+          done
+
+          if [ "$STATUS" = "DOWN" ]; then
+            COMMENT="Server is down, has a slow internet connection, or the GitHub prober malfunctioned"
           fi
 
           TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -111,10 +125,11 @@ jobs:
             --argjson code "$HTTP_CODE" \
             --arg timestamp "$TS" \
             --argjson latency_ms "$LATENCY_MS" \
-            '{status:$status, http_code:$code, checked_at:$timestamp, latency_ms:$latency_ms}' \
+            --arg comment "$COMMENT" \
+            '{status:$status, http_code:$code, checked_at:$timestamp, latency_ms:$latency_ms, comment:$comment}' \
             > public/status.json
 
-          echo "{\"status\":\"$STATUS\",\"http_code\":$HTTP_CODE,\"checked_at\":\"$TS\",\"latency_ms\":$LATENCY_MS}" >> logs/raw.log
+          echo "{\"status\":\"$STATUS\",\"http_code\":$HTTP_CODE,\"checked_at\":\"$TS\",\"latency_ms\":$LATENCY_MS,\"comment\":\"$COMMENT\"}" >> logs/raw.log
 
       # ─────────────────────────────────────────────
       # (Optional)
